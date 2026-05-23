@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# Colors
+R="\e[31m"
+G="\e[32m"
+Y="\e[33m"
+B="\e[34m"
+N="\e[0m"
+PB="\033[1;36m"
+
+# Gather Network Stats
+LAN_IP=$(hostname -I | awk '{print $1}')
+WAN_IP=$(curl -s --max-time 2 ifconfig.me || echo "Offline")
+
+# Check actual internet connectivity
+if ping -q -c 1 -W 1 1.1.1.1 >/dev/null 2>&1; then
+    NET_STATUS="${G}● Connected to Internet${N}"
+else
+    NET_STATUS="${R}● Not Connected to Internet${N}"
+fi
+${B}
+printf "${PB}          |          |                     ${N}\n"
+printf "${PB}       __ |  __   __ | _  __   _           ${N}\n"
+printf "${PB}      /  \\\| /  \\\ /   |/  / _\\\ |      ${N}\n"
+printf "${PB}      \\\__/| \\\__/ \\\__ |\\\_ \\\__  |  ${N}\n"
+
+# Read ASCII art (Using actual color code text inside unquoted EOF)
+mapfile -t ART <<EOF
+${B}                                           ${N}
+${B}                    ##        .            ${N}
+${B}              ## ## ##       ==            ${N}
+${B}           ## ## ## ##      ===            ${N}
+${B}       /""""""""""""""""\___/ ===          ${N}
+${B}  ~~~ {~~ ~~~~ ~~~ ~~~~ ~~ ~ /  ===- ~~~   ${N}
+${B}       \______ o          __/              ${N}
+${B}         \    \        __/                 ${N}
+${B}          \____\______/                    ${N}
+${B}                                           ${N}
+EOF
+
+# Read Info stats
+mapfile -t INFO < <(
+    if systemctl is-active --quiet docker; then
+        printf "${Y}Docker${N} ${G}● Running${N}\n"
+    else
+        printf "${Y}Docker${N} ${R}● Stopped${N}\n"
+    fi
+
+    printf " ├─ Containers : $(docker ps -aq 2>/dev/null | wc -l)\n"
+    printf " └─ Running    : $(docker ps -q 2>/dev/null | wc -l)\n\n"
+
+    printf "${Y}Network${N} %b\n" "$NET_STATUS"
+    printf " ├─ LAN    : %s\n" "$LAN_IP"
+    printf " └─ WAN    : %s\n\n" "$WAN_IP"
+
+    printf "${Y}Containers (Top 10)${N}\n"
+    
+    if [ "$(docker ps -q | wc -l)" -gt 0 ]; then
+        docker stats --no-stream --format "{{.Name}}!{{.CPUPerc}}!{{.MemUsage}}" | head -n 10 | awk -F'!' '
+        {
+            name = $1
+            cpu = $2
+            mem = $3
+            
+            # Truncate container names if they are longer than 16 characters
+            if (length(name) > 16) {
+                name = substr(name, 1, 13) "..."
+            }
+            
+            # Strip % sign and round CPU
+            gsub(/%/, "", cpu)
+            cpu = sprintf("%.1f%%", cpu)
+            
+            # Parse only the USED memory portion to keep it narrow
+            split(mem, parts, "/")
+            gsub(/[[:space:]]/, "", parts[1])
+            
+            if (parts[1] ~ /GiB/) { sub(/GiB/, "", parts[1]); used = sprintf("%.1fGB", parts[1]) }
+            else if (parts[1] ~ /MiB/) { sub(/MiB/, "", parts[1]); used = sprintf("%.1fMB", parts[1]) }
+            else { used = parts[1] }
+            
+            print "├─!" name "!" "│ CPU " cpu "!" "│ MEM " used
+        }' | column -t -s '!' | sed '$s/^├─/└─/'
+    else
+        printf "└─ No running containers\n"
+    fi
+)
+
+# Determine total rows to iterate through
+rows=$(( ${#ART[@]} > ${#INFO[@]} ? ${#ART[@]} : ${#INFO[@]} ))
+
+# Target width for the left-hand column
+ART_WIDTH=45
+
+# Side-by-side printing loop
+for ((i=0;i<rows;i++)); do
+    art_line="${ART[$i]}"
+    info_line="${INFO[$i]}"
+    
+    # Strip color codes temporarily to calculate the *visible* width of the ASCII line
+    visible_art=$(echo -e "$art_line" | sed 's/\x1b\[[0-9;]*m//g')
+    visible_len=${#visible_art}
+    
+    # Correctly pad out to the target width even if the ASCII art line is completely empty (lines 11+)
+    pad_len=$(( ART_WIDTH - visible_len ))
+    padding=""
+    if [ $pad_len -gt 0 ]; then
+        padding=$(printf '%*s' "$pad_len")
+    fi
+    
+    # Print the column perfectly aligned
+    printf "%b%s │ %b\n" "$art_line" "$padding" "$info_line"
+done
